@@ -3,18 +3,17 @@ import pandas as pd
 import numpy as np
 import io
 
-st.set_page_config(page_title="Unified Enforcement Index Generator", layout="wide")
-st.title("Unified Enforcement Index Generator")
+st.set_page_config(page_title="Accurate Enforcement Index Generator", layout="wide")
+st.title("Accurate Enforcement Index Generator")
 
 st.markdown("""
 Upload your *Constituents* file and up to two Enforcement files:
-- **File 1:** Complaints/events (each row = one complaint)
-- **File 2:** Company summary (each row = one company, summary stats)
+- **File 2A:** Complaints/events (each row = one complaint, with `STATUS`, `DATE OF RECIEPT`, etc.)
+- **File 2C:** Company summary (each row = one company, with `RECEIVED`, `NO. OF SHAREHOLDERS`, etc.)
 
-The system merges, lets you customize the Enforcement Index calculation, and **ensures all companies have unique, discriminative enforcement scores**.
+The system merges, lets you customize the Enforcement Index calculation, and ensures all companies have accurate, stable, and comparable enforcement scores.
 """)
 
-# --- Helper Functions ---
 def load_file(uploaded_file):
     if uploaded_file is None:
         return None
@@ -38,17 +37,6 @@ def clean_and_standardize(df):
     df.columns = [str(c).strip().upper() for c in df.columns]
     return df
 
-def safe_eval(formula, **kwargs):
-    allowed_names = {k: kwargs.get(k, 0) for k in [
-        "total", "unresolved", "recent", "pending", "shareholders",
-        "count_wt", "unres_wt", "rec_wt", "pend_wt", "sh_wt", "np"
-    ]}
-    allowed_names["np"] = np
-    try:
-        return eval(formula, {"__builtins__": {}}, allowed_names)
-    except Exception:
-        return np.nan
-
 def minmax_scale(series):
     arr = series.astype(float).values
     if arr.max() == arr.min():
@@ -64,18 +52,18 @@ constituents_file = col1.file_uploader(
     type=["xlsx", "xls", "csv"],
     key="constituents"
 )
-enforcement_file_1 = col2.file_uploader(
-    "Upload Enforcement File 1: Events (Excel or CSV)",
+enforcement_file_2a = col2.file_uploader(
+    "Upload Enforcement File 2A: Events (Excel or CSV)",
     type=["xlsx", "xls", "csv"],
-    key="enforcement1"
+    key="enforcement2a"
 )
-enforcement_file_2 = col3.file_uploader(
-    "Upload Enforcement File 2: Summary (Excel or CSV)",
+enforcement_file_2c = col3.file_uploader(
+    "Upload Enforcement File 2C: Summary (Excel or CSV)",
     type=["xlsx", "xls", "csv"],
-    key="enforcement2"
+    key="enforcement2c"
 )
 
-df_const, df_enf1, df_enf2 = None, None, None
+df_const, df_2a, df_2c = None, None, None
 
 if constituents_file:
     df_const = load_file(constituents_file)
@@ -90,193 +78,158 @@ if constituents_file:
     if "COMPANY" in df_const.columns:
         df_const["COMPANY"] = df_const["COMPANY"].astype(str).str.upper().str.strip()
 
-if enforcement_file_1:
-    df_enf1 = load_file(enforcement_file_1)
-    df_enf1 = clean_and_standardize(df_enf1)
-    company_col1 = find_company_column(df_enf1)
-    if company_col1:
-        df_enf1[company_col1] = df_enf1[company_col1].astype(str).str.upper().str.strip()
-    if "STATUS" not in df_enf1.columns:
-        df_enf1["STATUS"] = "RESOLVED"
-    date_col1 = None
-    for c in df_enf1.columns:
+if enforcement_file_2a:
+    df_2a = load_file(enforcement_file_2a)
+    df_2a = clean_and_standardize(df_2a)
+    company_col_2a = find_company_column(df_2a)
+    if company_col_2a:
+        df_2a[company_col_2a] = df_2a[company_col_2a].astype(str).str.upper().str.strip()
+    if "STATUS" not in df_2a.columns:
+        df_2a["STATUS"] = "RESOLVED"
+    date_col_2a = None
+    for c in df_2a.columns:
         if "DATE OF RECIEPT" in c or "DATE OF RECEIPT" in c:
-            date_col1 = c
+            date_col_2a = c
             break
-    if date_col1 is None:
-        df_enf1["DATE OF RECIEPT"] = pd.NaT
-        date_col1 = "DATE OF RECIEPT"
-    df_enf1[date_col1] = pd.to_datetime(df_enf1[date_col1], errors="coerce")
+    if date_col_2a is None:
+        df_2a["DATE OF RECIEPT"] = pd.NaT
+        date_col_2a = "DATE OF RECIEPT"
+    df_2a[date_col_2a] = pd.to_datetime(df_2a[date_col_2a], errors="coerce")
 
-if enforcement_file_2:
-    df_enf2 = load_file(enforcement_file_2)
-    df_enf2 = clean_and_standardize(df_enf2)
-    company_col2 = find_company_column(df_enf2)
-    if company_col2:
-        df_enf2[company_col2] = df_enf2[company_col2].astype(str).str.upper().str.strip()
+if enforcement_file_2c:
+    df_2c = load_file(enforcement_file_2c)
+    df_2c = clean_and_standardize(df_2c)
+    company_col_2c = find_company_column(df_2c)
+    if company_col_2c:
+        df_2c[company_col_2c] = df_2c[company_col_2c].astype(str).str.upper().str.strip()
     num_cols = [
         "NO. OF SHAREHOLDERS", "RECEIVED", "REDRESSED THROUGH EXCHANGE",
         "NON-ACTIONABLE~", "ADVISED / OPTED FOR ARBITRATION", "PENDING FOR REDRESSAL WITH EXCHANGE"
     ]
     for c in num_cols:
-        to_numeric_safe(df_enf2, c)
-    for c in list(df_enf2.columns):
+        to_numeric_safe(df_2c, c)
+    for c in list(df_2c.columns):
         if 'DATE' in c and c not in num_cols:
-            df_enf2.drop(columns=[c], inplace=True, errors="ignore")
+            df_2c.drop(columns=[c], inplace=True, errors="ignore")
 
 if df_const is not None:
     st.subheader("Constituents Preview")
-    st.dataframe(df_const.head(20), use_container_width=True)
-if df_enf1 is not None:
-    st.subheader("Enforcement File 1 (Events) Preview")
-    st.dataframe(df_enf1.head(20), use_container_width=True)
-if df_enf2 is not None:
-    st.subheader("Enforcement File 2 (Summary) Preview")
-    st.dataframe(df_enf2.head(20), use_container_width=True)
+    st.dataframe(df_const.head(10), use_container_width=True)
+if df_2a is not None:
+    st.subheader("File 2A (Events) Preview")
+    st.dataframe(df_2a.head(10), use_container_width=True)
+if df_2c is not None:
+    st.subheader("File 2C (Summary) Preview")
+    st.dataframe(df_2c.head(10), use_container_width=True)
 
-if df_const is not None and (df_enf1 is not None or df_enf2 is not None):
-    st.header("2. Calculation Customization")
-    metrics = [
-        ("Total Complaints", "total_complaints"),
-        ("Unresolved Complaints", "unresolved"),
-        ("Recent Complaints (last 1yr)", "recent"),
-        ("Pending for Redressal", "pending"),
-        ("Shareholders", "shareholders")
-    ]
-    metric_sources = {}
-    st.markdown("#### Select data source for each metric:")
-    metric_cols = st.columns(len(metrics))
-    for idx, (label, var) in enumerate(metrics):
-        choices = []
-        if df_enf1 is not None and var in ["total_complaints","unresolved","recent"]:
-            choices.append("File 1")
-        if df_enf2 is not None and var in ["total_complaints","pending","shareholders"]:
-            choices.append("File 2")
-        if choices:
-            default = 0
-            metric_sources[var] = metric_cols[idx].selectbox(label, choices, index=default, key=f"src_{var}")
-        else:
-            metric_sources[var] = None
+if df_const is not None and (df_2a is not None or df_2c is not None):
+    st.header("2. Calculation Settings")
 
     wcols = st.columns(5)
-    count_weight = wcols[0].number_input("Weight: Total Complaints", 0.0, 10.0, 1.0)
-    unresolved_weight = wcols[1].number_input("Weight: Unresolved", 0.0, 10.0, 2.0)
-    recent_weight = wcols[2].number_input("Weight: Recent (1yr)", 0.0, 10.0, 2.0)
-    pending_weight = wcols[3].number_input("Weight: Pending", 0.0, 10.0, 2.0)
-    shareholders_weight = wcols[4].number_input("Weight: Shareholders", 0.0, 10.0, 0.0)
-
-    custom_formula = st.text_area(
-        "Custom Index Formula (use: total, unresolved, recent, pending, shareholders, count_wt, unres_wt, rec_wt, pend_wt, sh_wt)",
-        value="1/(1e-6 + count_wt*total + unres_wt*unresolved + rec_wt*recent + pend_wt*pending - sh_wt*shareholders/10000)",
-        help="A small epsilon (1e-6) ensures unique scores for zero cases. You can set shareholders_weight=0 to ignore that variable."
-    )
+    w_total = wcols[0].number_input("Weight: Total Complaints", 0.0, 1.0, 0.4)
+    w_unresolved = wcols[1].number_input("Weight: Unresolved", 0.0, 1.0, 0.2)
+    w_recent = wcols[2].number_input("Weight: Recent (1yr)", 0.0, 1.0, 0.2)
+    w_pending = wcols[3].number_input("Weight: Pending", 0.0, 1.0, 0.1)
+    w_shareholders = wcols[4].number_input("Weight: Shareholders (positive effect!)", -1.0, 1.0, 0.1)
+    st.caption("Weights should sum to 1 or less. Shareholders is positive; others are penalties.")
 
     st.header("3. Calculation and Ranking")
     merged = df_const.copy()
 
-    # Calculate all metrics (use minmax scaling if you want more separation)
-    metric_values = {}
+    # --- Metrics calculation for each company
     n = len(merged)
+    metrics = {
+        "total": np.zeros(n),
+        "unresolved": np.zeros(n),
+        "recent": np.zeros(n),
+        "pending": np.zeros(n),
+        "shareholders": np.zeros(n)
+    }
 
-    # Total Complaints
-    metric_values["total"] = np.zeros(n)
-    if metric_sources["total_complaints"] == "File 1" and df_enf1 is not None:
-        company_col1 = find_company_column(df_enf1)
-        if company_col1:
-            total_counts = df_enf1.groupby(company_col1).size().reset_index(name="TOTAL_COMPLAINTS_F1")
-            merged = merged.merge(total_counts, left_on="COMPANY", right_on=company_col1, how="left")
-            metric_values["total"] = merged["TOTAL_COMPLAINTS_F1"].fillna(0).astype(int).values
-            merged.drop(columns=["TOTAL_COMPLAINTS_F1", company_col1], inplace=True, errors="ignore")
-    elif metric_sources["total_complaints"] == "File 2" and df_enf2 is not None:
-        company_col2 = find_company_column(df_enf2)
-        if company_col2 and "RECEIVED" in df_enf2.columns:
-            merged = merged.merge(df_enf2[[company_col2, "RECEIVED"]], left_on="COMPANY", right_on=company_col2, how="left")
-            metric_values["total"] = merged["RECEIVED"].fillna(0).astype(int).values
-            merged.drop(columns=["RECEIVED", company_col2], inplace=True, errors="ignore")
+    # Total complaints (from 2A if available, else from 2C)
+    if df_2a is not None:
+        # Count all complaints by company
+        company_col_2a = find_company_column(df_2a)
+        total_counts = df_2a.groupby(company_col_2a).size().reset_index(name="TOTAL_COMPLAINTS")
+        merged = merged.merge(total_counts, left_on="COMPANY", right_on=company_col_2a, how="left")
+        metrics["total"] = merged["TOTAL_COMPLAINTS"].fillna(0).astype(int).values
+        merged.drop(columns=["TOTAL_COMPLAINTS", company_col_2a], inplace=True, errors="ignore")
+    elif df_2c is not None:
+        company_col_2c = find_company_column(df_2c)
+        if company_col_2c and "RECEIVED" in df_2c.columns:
+            merged = merged.merge(df_2c[[company_col_2c, "RECEIVED"]], left_on="COMPANY", right_on=company_col_2c, how="left")
+            metrics["total"] = merged["RECEIVED"].fillna(0).astype(int).values
+            merged.drop(columns=["RECEIVED", company_col_2c], inplace=True, errors="ignore")
 
-    # Unresolved
-    metric_values["unresolved"] = np.zeros(n)
-    if metric_sources["unresolved"] == "File 1" and df_enf1 is not None:
-        company_col1 = find_company_column(df_enf1)
-        if company_col1:
-            unresolved = df_enf1[df_enf1["STATUS"].str.upper() != "RESOLVED"]
-            unresolved_counts = unresolved.groupby(company_col1).size().reset_index(name="UNRESOLVED_F1")
-            merged = merged.merge(unresolved_counts, left_on="COMPANY", right_on=company_col1, how="left")
-            metric_values["unresolved"] = merged["UNRESOLVED_F1"].fillna(0).astype(int).values
-            merged.drop(columns=["UNRESOLVED_F1", company_col1], inplace=True, errors="ignore")
+    # Unresolved (from 2A)
+    if df_2a is not None:
+        company_col_2a = find_company_column(df_2a)
+        unresolved = df_2a[df_2a["STATUS"].str.upper() != "RESOLVED"]
+        unresolved_counts = unresolved.groupby(company_col_2a).size().reset_index(name="UNRESOLVED")
+        merged = merged.merge(unresolved_counts, left_on="COMPANY", right_on=company_col_2a, how="left")
+        metrics["unresolved"] = merged["UNRESOLVED"].fillna(0).astype(int).values
+        merged.drop(columns=["UNRESOLVED", company_col_2a], inplace=True, errors="ignore")
 
-    # Recent
-    metric_values["recent"] = np.zeros(n)
-    if metric_sources["recent"] == "File 1" and df_enf1 is not None:
-        company_col1 = find_company_column(df_enf1)
-        date_col1 = None
-        for c in df_enf1.columns:
+    # Recent (from 2A)
+    if df_2a is not None:
+        company_col_2a = find_company_column(df_2a)
+        date_col_2a = None
+        for c in df_2a.columns:
             if "DATE OF RECIEPT" in c or "DATE OF RECEIPT" in c:
-                date_col1 = c
+                date_col_2a = c
                 break
-        if company_col1 and date_col1:
+        if company_col_2a and date_col_2a:
             today = pd.Timestamp.today()
             one_year_ago = today - pd.Timedelta(days=365)
-            df_enf1["DATE_RECPT_DT"] = pd.to_datetime(df_enf1[date_col1], errors="coerce")
-            recent = df_enf1[df_enf1["DATE_RECPT_DT"] >= one_year_ago]
-            recent_counts = recent.groupby(company_col1).size().reset_index(name="RECENT_F1")
-            merged = merged.merge(recent_counts, left_on="COMPANY", right_on=company_col1, how="left")
-            metric_values["recent"] = merged["RECENT_F1"].fillna(0).astype(int).values
-            merged.drop(columns=["RECENT_F1", company_col1], inplace=True, errors="ignore")
+            df_2a["DATE_RECPT_DT"] = pd.to_datetime(df_2a[date_col_2a], errors="coerce")
+            recent = df_2a[df_2a["DATE_RECPT_DT"] >= one_year_ago]
+            recent_counts = recent.groupby(company_col_2a).size().reset_index(name="RECENT")
+            merged = merged.merge(recent_counts, left_on="COMPANY", right_on=company_col_2a, how="left")
+            metrics["recent"] = merged["RECENT"].fillna(0).astype(int).values
+            merged.drop(columns=["RECENT", company_col_2a], inplace=True, errors="ignore")
 
-    # Pending
-    metric_values["pending"] = np.zeros(n)
-    if metric_sources["pending"] == "File 2" and df_enf2 is not None:
-        company_col2 = find_company_column(df_enf2)
-        if company_col2 and "PENDING FOR REDRESSAL WITH EXCHANGE" in df_enf2.columns:
-            merged = merged.merge(
-                df_enf2[[company_col2, "PENDING FOR REDRESSAL WITH EXCHANGE"]],
-                left_on="COMPANY", right_on=company_col2, how="left")
-            metric_values["pending"] = merged["PENDING FOR REDRESSAL WITH EXCHANGE"].fillna(0).astype(int).values
-            merged.drop(columns=["PENDING FOR REDRESSAL WITH EXCHANGE", company_col2], inplace=True, errors="ignore")
+    # Pending (from 2C)
+    if df_2c is not None and "PENDING FOR REDRESSAL WITH EXCHANGE" in df_2c.columns:
+        company_col_2c = find_company_column(df_2c)
+        merged = merged.merge(
+            df_2c[[company_col_2c, "PENDING FOR REDRESSAL WITH EXCHANGE"]],
+            left_on="COMPANY", right_on=company_col_2c, how="left")
+        metrics["pending"] = merged["PENDING FOR REDRESSAL WITH EXCHANGE"].fillna(0).astype(int).values
+        merged.drop(columns=["PENDING FOR REDRESSAL WITH EXCHANGE", company_col_2c], inplace=True, errors="ignore")
 
-    # Shareholders
-    metric_values["shareholders"] = np.zeros(n)
-    if metric_sources["shareholders"] == "File 2" and df_enf2 is not None:
-        company_col2 = find_company_column(df_enf2)
-        if company_col2 and "NO. OF SHAREHOLDERS" in df_enf2.columns:
-            merged = merged.merge(df_enf2[[company_col2, "NO. OF SHAREHOLDERS"]],
-                                  left_on="COMPANY", right_on=company_col2, how="left")
-            metric_values["shareholders"] = merged["NO. OF SHAREHOLDERS"].fillna(0).astype(int).values
-            merged.drop(columns=["NO. OF SHAREHOLDERS", company_col2], inplace=True, errors="ignore")
+    # Shareholders (from 2C)
+    if df_2c is not None and "NO. OF SHAREHOLDERS" in df_2c.columns:
+        company_col_2c = find_company_column(df_2c)
+        merged = merged.merge(df_2c[[company_col_2c, "NO. OF SHAREHOLDERS"]],
+                              left_on="COMPANY", right_on=company_col_2c, how="left")
+        metrics["shareholders"] = merged["NO. OF SHAREHOLDERS"].fillna(0).astype(int).values
+        merged.drop(columns=["NO. OF SHAREHOLDERS", company_col_2c], inplace=True, errors="ignore")
 
-    # Optional: Min-max normalization for all metrics to increase differentiation
-    for key in ["total", "unresolved", "recent", "pending", "shareholders"]:
-        metric_values[key] = minmax_scale(pd.Series(metric_values[key]))
+    # --- Min-max normalization for all metrics
+    for key in metrics:
+        metrics[key] = minmax_scale(pd.Series(metrics[key]))
 
-    # --- Compute Index and Rank ---
-    merged["ENFORCEMENT_SCORE"] = [
-        safe_eval(
-            custom_formula,
-            total=float(metric_values["total"][i]),
-            unresolved=float(metric_values["unresolved"][i]),
-            recent=float(metric_values["recent"][i]),
-            pending=float(metric_values["pending"][i]),
-            shareholders=float(metric_values["shareholders"][i]),
-            count_wt=count_weight,
-            unres_wt=unresolved_weight,
-            rec_wt=recent_weight,
-            pend_wt=pending_weight,
-            sh_wt=shareholders_weight
-        )
-        for i in range(n)
-    ]
+    # --- Scoring ---
+    # ENFORCEMENT_SCORE = 100 * (1 - w1*total - w2*unresolved - w3*recent - w4*pending + w5*shareholders)
+    merged["ENFORCEMENT_SCORE"] = 100 * (
+        1
+        - w_total * metrics["total"]
+        - w_unresolved * metrics["unresolved"]
+        - w_recent * metrics["recent"]
+        - w_pending * metrics["pending"]
+        + w_shareholders * metrics["shareholders"]
+    )
 
-    # Add tiny epsilon to break ties (based on company index, stable for same input)
-    merged["ENFORCEMENT_SCORE"] += np.arange(n) * 1e-8
+    # Clamp to [0, 100]
+    merged["ENFORCEMENT_SCORE"] = merged["ENFORCEMENT_SCORE"].clip(lower=0, upper=100)
 
-    merged["RANK"] = merged["ENFORCEMENT_SCORE"].rank(ascending=False, method='first').astype(int)
+    # Rank (highest is best)
+    merged["RANK"] = merged["ENFORCEMENT_SCORE"].rank(ascending=False, method='min').astype(int)
 
-    # --- Output: Only show result columns
     result_cols = ["COMPANY", "INDUSTRY", "SYMBOL", "SERIES", "ISIN", "ENFORCEMENT_SCORE", "RANK"]
     result_cols = [c for c in result_cols if c in merged.columns]
     result_df = merged[result_cols].sort_values("RANK")
-    st.subheader("Unified Enforcement Index Results")
+    st.subheader("Accurate Enforcement Index Results")
     st.dataframe(result_df, use_container_width=True)
 
     # --- Download options ---
@@ -286,19 +239,18 @@ if df_const is not None and (df_enf1 is not None or df_enf2 is not None):
     st.download_button(
         label="Download as Excel",
         data=out_excel.getvalue(),
-        file_name="enforcement_index_unified.xlsx",
+        file_name="enforcement_index_accurate.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
     out_csv = result_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         label="Download as CSV",
         data=out_csv,
-        file_name="enforcement_index_unified.csv",
+        file_name="enforcement_index_accurate.csv",
         mime="text/csv"
     )
 
-    st.markdown("> **Tip:** All selected variables are used in scoring, but only result columns are visible in output.")
+    st.markdown("> **Tip:** All variables are min-max normalized, scores are always in [0, 100]. Adjust weights for your business logic.")
 
 else:
     st.info("Please upload the constituents file and at least one enforcement file to proceed.")
