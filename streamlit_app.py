@@ -1,109 +1,190 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import io
 
 st.set_page_config(page_title="Enforcement Index Generator", layout="wide")
 
 st.title("Enforcement Index Generator")
 
 st.markdown("""
-This tool helps you generate an Enforcement Index for companies based on enforcement records.
-- **Step 1:** Upload the *Constituents* Excel file (list of companies to track, with optional weights for each company).
-- **Step 2:** Upload the *Enforcement* Excel file (with enforcement actions per company).
-- **Step 3:** The app will compute an index, rank the companies, and allow you to download the results.
+This tool generates an Enforcement Index for companies based on enforcement action records.
+
+**How it works:**
+- **Step 1:** Upload the *Constituents* file (Excel or CSV).
+- **Step 2:** Upload the *Enforcement* file (Excel or CSV).
+- **Step 3:** Customize index calculation and ranking options.
+- **Step 4:** Download the computed index as Excel or CSV.
 """)
 
 # --- File Uploads ---
 st.header("1. Upload Files")
 col1, col2 = st.columns(2)
 
-with col1:
-    constituents_file = st.file_uploader(
-        "Upload Constituents Excel",
-        type=["xlsx", "xls"],
-        key="constituents"
-    )
+constituents_file = col1.file_uploader(
+    "Upload Constituents File (Excel or CSV)",
+    type=["xlsx", "xls", "csv"],
+    key="constituents"
+)
+enforcement_file = col2.file_uploader(
+    "Upload Enforcement File (Excel or CSV)",
+    type=["xlsx", "xls", "csv"],
+    key="enforcement"
+)
 
-with col2:
-    enforcement_file = st.file_uploader(
-        "Upload Enforcement Excel",
-        type=["xlsx", "xls"],
-        key="enforcement"
-    )
-
-# --- Data Preview & Processing ---
-if constituents_file and enforcement_file:
-    st.header("2. Data Preview")
-    
-    # Read constituents file
-    df_const = pd.read_excel(constituents_file)
-    if 'COMPANY' not in df_const.columns and 'Name' in df_const.columns:
-        df_const.rename(columns={'Name': 'COMPANY'}, inplace=True)
-    # Assume columns: COMPANY, WEIGHT (optional)
-    if 'WEIGHT' not in df_const.columns:
-        df_const['WEIGHT'] = 1.0
-    st.subheader("Constituents")
-    st.dataframe(df_const)
-    
-    # Read enforcement file
-    df_enf = pd.read_excel(enforcement_file)
-    st.subheader("Enforcement Records")
-    st.dataframe(df_enf.head(20))
-    
-    # --- Enforcement Index Calculation ---
-    st.header("3. Enforcement Index Calculation")
-    
-    # Normalize company names for join
-    df_const['COMPANY'] = df_const['COMPANY'].astype(str).str.upper().str.strip()
-    df_enf['NAME OF COMPANY'] = df_enf['NAME OF COMPANY'].astype(str).str.upper().str.strip()
-    
-    # Compute enforcement counts per company
-    enforcement_counts = (
-        df_enf.groupby('NAME OF COMPANY')
-        .size()
-        .reset_index(name='ENFORCEMENT_COUNT')
-    )
-    
-    # Merge with constituents
-    index_df = pd.merge(
-        df_const,
-        enforcement_counts,
-        left_on='COMPANY',
-        right_on='NAME OF COMPANY',
-        how='left'
-    )
-    index_df['ENFORCEMENT_COUNT'].fillna(0, inplace=True)
-    index_df['ENFORCEMENT_COUNT'] = index_df['ENFORCEMENT_COUNT'].astype(int)
-    
-    # Example: Compute Index as inverse of enforcement counts weighted
-    max_count = index_df['ENFORCEMENT_COUNT'].max()
-    if max_count == 0:
-        index_df['ENFORCEMENT_SCORE'] = 1.0
+# --- Load Data ---
+def load_file(uploaded_file):
+    if uploaded_file is None:
+        return None
+    if uploaded_file.name.endswith('.csv'):
+        return pd.read_csv(uploaded_file)
     else:
-        index_df['ENFORCEMENT_SCORE'] = (1 - (index_df['ENFORCEMENT_COUNT'] / max_count)) * index_df['WEIGHT']
-    
-    # Ranking
-    index_df['RANK'] = index_df['ENFORCEMENT_SCORE'].rank(ascending=False, method='min').astype(int)
-    
-    # Final columns
-    output_df = index_df[[
-        'COMPANY', 'WEIGHT', 'ENFORCEMENT_COUNT', 'ENFORCEMENT_SCORE', 'RANK'
-    ]].sort_values('RANK')
-    
+        return pd.read_excel(uploaded_file)
+
+df_const, df_enf = None, None
+
+if constituents_file:
+    df_const = load_file(constituents_file)
+    # Standardize column names
+    df_const.columns = [c.strip().upper() for c in df_const.columns]
+    # Rename to expected
+    df_const.rename(columns={
+        "COMPANY NAME": "COMPANY",
+        "SYMBOL": "SYMBOL",
+        "SERIES": "SERIES",
+        "ISIN CODE": "ISIN",
+        "INDUSTRY": "INDUSTRY"
+    }, inplace=True)
+    df_const['COMPANY'] = df_const['COMPANY'].astype(str).str.upper().str.strip()
+
+if enforcement_file:
+    df_enf = load_file(enforcement_file)
+    df_enf.columns = [c.strip().upper() for c in df_enf.columns]
+    if "NAME OF COMPANY" in df_enf.columns:
+        df_enf['NAME OF COMPANY'] = df_enf['NAME OF COMPANY'].astype(str).str.upper().str.strip()
+
+# --- Data Preview ---
+if df_const is not None and df_enf is not None:
+    st.header("2. Data Preview")
+
+    st.subheader("Constituents")
+    st.dataframe(df_const.head(20), use_container_width=True)
+
+    st.subheader("Enforcement Records")
+    st.dataframe(df_enf.head(20), use_container_width=True)
+
+    st.header("3. Index Calculation Settings")
+
+    # --- Customization Options ---
+    st.markdown("#### Advanced Calculation Options")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        count_weight = st.number_input(
+            "Weight for Number of Enforcements", min_value=0.0, max_value=10.0, value=1.0)
+    with col2:
+        recentness_weight = st.number_input(
+            "Weight for Recent Enforcements (last 1 year)", min_value=0.0, max_value=10.0, value=2.0)
+    with col3:
+        unresolved_weight = st.number_input(
+            "Weight for Unresolved Complaints", min_value=0.0, max_value=10.0, value=3.0)
+
+    index_formula = st.text_area(
+        "Custom Index Formula (use variables: total, recent, unresolved, count_wt, rec_wt, unres_wt)",
+        value="1 / (1 + count_wt*total + rec_wt*recent + unres_wt*unresolved)",
+        help="Define your own formula using available variables."
+    )
+
+    # --- Calculation ---
+    st.header("4. Enforcement Index Calculation")
+    df_enf["DATE OF RECIEPT"] = pd.to_datetime(df_enf["DATE OF RECIEPT"], errors='coerce')
+    today = pd.Timestamp.today()
+    one_year_ago = today - pd.Timedelta(days=365)
+
+    # Total enforcements
+    total_counts = df_enf.groupby("NAME OF COMPANY").size().reset_index(name="TOTAL_ENFORCEMENTS")
+    # Recent enforcements
+    recent_counts = df_enf[df_enf["DATE OF RECIEPT"] >= one_year_ago].groupby("NAME OF COMPANY").size().reset_index(name="RECENT_ENFORCEMENTS")
+    # Unresolved complaints
+    unresolved_counts = df_enf[df_enf["STATUS"] != "RESOLVED"].groupby("NAME OF COMPANY").size().reset_index(name="UNRESOLVED")
+
+    # Merge all counts
+    score_df = df_const.copy()
+    score_df = score_df.merge(total_counts, left_on="COMPANY", right_on="NAME OF COMPANY", how="left")
+    score_df = score_df.merge(recent_counts, on="COMPANY", how="left")
+    score_df = score_df.merge(unresolved_counts, on="COMPANY", how="left")
+    for col in ["TOTAL_ENFORCEMENTS", "RECENT_ENFORCEMENTS", "UNRESOLVED"]:
+        if col not in score_df.columns:
+            score_df[col] = 0
+        score_df[col] = score_df[col].fillna(0).astype(int)
+
+    # Prepare variables for formula
+    count_wt = count_weight
+    rec_wt = recentness_weight
+    unres_wt = unresolved_weight
+
+    # Calculate index using custom formula
+    def safe_eval(formula, total, recent, unresolved, count_wt, rec_wt, unres_wt):
+        # only allow numeric values and the specified variables
+        allowed_names = {
+            "total": total,
+            "recent": recent,
+            "unresolved": unresolved,
+            "count_wt": count_wt,
+            "rec_wt": rec_wt,
+            "unres_wt": unres_wt,
+            "np": np
+        }
+        try:
+            return eval(formula, {"__builtins__": {}}, allowed_names)
+        except Exception:
+            return np.nan
+
+    score_df["ENFORCEMENT_SCORE"] = score_df.apply(
+        lambda row: safe_eval(
+            index_formula,
+            row["TOTAL_ENFORCEMENTS"],
+            row["RECENT_ENFORCEMENTS"],
+            row["UNRESOLVED"],
+            count_wt,
+            rec_wt,
+            unres_wt
+        ),
+        axis=1
+    )
+
+    score_df["RANK"] = score_df["ENFORCEMENT_SCORE"].rank(ascending=False, method='min').astype(int)
+
+    # Output columns
+    show_cols = [
+        "COMPANY", "INDUSTRY", "SYMBOL", "SERIES", "ISIN",
+        "TOTAL_ENFORCEMENTS", "RECENT_ENFORCEMENTS", "UNRESOLVED",
+        "ENFORCEMENT_SCORE", "RANK"
+    ]
+    output_df = score_df[show_cols].sort_values("RANK")
+
     st.subheader("Enforcement Index Results")
     st.dataframe(output_df, use_container_width=True)
-    
-    # Download button
-    st.header("4. Download Results")
-    out_xlsx = output_df.to_excel(index=False, engine='openpyxl')
+
+    # --- Download options ---
+    st.header("5. Download Results")
+    out_excel = io.BytesIO()
+    output_df.to_excel(out_excel, index=False, engine="openpyxl")
     st.download_button(
-        label="Download Enforcement Index as Excel",
-        data=out_xlsx,
+        label="Download as Excel",
+        data=out_excel.getvalue(),
         file_name="enforcement_index.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-    
-    st.markdown("**Note**: You can sort by any column in the preview above.")
+
+    out_csv = output_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Download as CSV",
+        data=out_csv,
+        file_name="enforcement_index.csv",
+        mime="text/csv"
+    )
+
+    st.markdown("**Tip:** Adjust weights and formula above to experiment with ranking logic.")
 
 else:
     st.info("Please upload both the constituents and enforcement files to proceed.")
