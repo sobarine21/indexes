@@ -8,10 +8,10 @@ st.title("Accurate Enforcement Index Generator")
 
 st.markdown("""
 Upload your *Constituents* file and up to two Enforcement files:
-- **File 2A:** Complaints/events (each row = one complaint, with `STATUS`, `DATE OF RECIEPT`, etc.)
-- **File 2C:** Company summary (each row = one company, with `RECEIVED`, `NO. OF SHAREHOLDERS`, etc.)
+- **File 2A:** Complaints/events (row = one complaint, with `STATUS`, `DATE OF RECIEPT`, etc.)
+- **File 2C:** Company summary (row = one company, with `RECEIVED`, `NO. OF SHAREHOLDERS`, etc.)
 
-The system merges, lets you customize the Enforcement Index calculation, and ensures all companies have accurate, stable, and comparable enforcement scores.
+**Each company will appear only once in the output, with a unified, accurate Enforcement Score.**
 """)
 
 def load_file(uploaded_file):
@@ -209,6 +209,13 @@ if df_const is not None and (df_2a is not None or df_2c is not None):
     else:
         merged["SHAREHOLDERS"] = 0
 
+    # --- Only keep one row per company (choose max metric values per company, or you can use sum/mean)
+    metrics_cols = ["TOTAL_COMPLAINTS", "UNRESOLVED", "RECENT", "PENDING", "SHAREHOLDERS"]
+    merged = merged.groupby("COMPANY", as_index=False).agg(
+        {**{c: "max" for c in metrics_cols},
+          **{c: "first" for c in merged.columns if c not in metrics_cols and c != "COMPANY"}}
+    )
+
     # --- Min-max normalization for all metrics (always same shape as merged)
     metrics = {}
     for key in ["TOTAL_COMPLAINTS", "UNRESOLVED", "RECENT", "PENDING", "SHAREHOLDERS"]:
@@ -230,7 +237,7 @@ if df_const is not None and (df_2a is not None or df_2c is not None):
     result_cols = ["COMPANY", "INDUSTRY", "SYMBOL", "SERIES", "ISIN", "ENFORCEMENT_SCORE", "RANK"]
     result_cols = [c for c in result_cols if c in merged.columns]
     result_df = merged[result_cols].sort_values("RANK")
-    st.subheader("Accurate Enforcement Index Results")
+    st.subheader("Accurate Enforcement Index Results (Unique Companies Only)")
     st.dataframe(result_df, use_container_width=True)
 
     # --- Download options ---
@@ -251,7 +258,7 @@ if df_const is not None and (df_2a is not None or df_2c is not None):
         mime="text/csv"
     )
 
-    st.markdown("> **Tip:** All variables are min-max normalized, scores are always in [0, 100]. Adjust weights for your business logic.")
+    st.markdown("> **Tip:** Each company appears only once, using max for all metrics (if duplicate rows). All variables are min-max normalized, scores are always in [0, 100]. Adjust weights for your business logic.")
 
 else:
     st.info("Please upload the constituents file and at least one enforcement file to proceed.")
