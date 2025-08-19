@@ -60,6 +60,17 @@ if constituents_file:
 if enforcement_file:
     df_enf = load_file(enforcement_file)
     df_enf.columns = [c.strip().upper() for c in df_enf.columns]
+    # Try to standardize status column (make it always there, even if missing)
+    possible_status_cols = ["STATUS", "COMPLAINT STATUS", "ENFORCEMENT STATUS"]
+    status_col = None
+    for col in possible_status_cols:
+        if col in df_enf.columns:
+            status_col = col
+            break
+    if status_col is None:
+        # Add a dummy STATUS column with all "RESOLVED" so unresolved counts always zero
+        df_enf["STATUS"] = "RESOLVED"
+        status_col = "STATUS"
     if "NAME OF COMPANY" in df_enf.columns:
         df_enf['NAME OF COMPANY'] = df_enf['NAME OF COMPANY'].astype(str).str.upper().str.strip()
 
@@ -96,22 +107,43 @@ if df_const is not None and df_enf is not None:
 
     # --- Calculation ---
     st.header("4. Enforcement Index Calculation")
-    df_enf["DATE OF RECIEPT"] = pd.to_datetime(df_enf["DATE OF RECIEPT"], errors='coerce')
-    today = pd.Timestamp.today()
-    one_year_ago = today - pd.Timedelta(days=365)
+
+    # Handle date parsing for recent enforcements
+    date_col = None
+    for c in ["DATE OF RECIEPT", "DATE OF RECEIPT", "RECEIPT DATE", "DATE"]:
+        if c in df_enf.columns:
+            date_col = c
+            break
+
+    if date_col is not None:
+        df_enf[date_col] = pd.to_datetime(df_enf[date_col], errors='coerce')
+        today = pd.Timestamp.today()
+        one_year_ago = today - pd.Timedelta(days=365)
+    else:
+        today = pd.Timestamp.today()
+        one_year_ago = today - pd.Timedelta(days=365)
+        df_enf["DUMMY_DATE"] = today
+        date_col = "DUMMY_DATE"
 
     # Total enforcements
-    total_counts = df_enf.groupby("NAME OF COMPANY").size().reset_index(name="TOTAL_ENFORCEMENTS")
+    if "NAME OF COMPANY" in df_enf.columns:
+        group_col = "NAME OF COMPANY"
+    elif "COMPANY" in df_enf.columns:
+        group_col = "COMPANY"
+    else:
+        group_col = df_enf.columns[0]  # fallback to first column
+
+    total_counts = df_enf.groupby(group_col).size().reset_index(name="TOTAL_ENFORCEMENTS")
     # Recent enforcements
-    recent_counts = df_enf[df_enf["DATE OF RECIEPT"] >= one_year_ago].groupby("NAME OF COMPANY").size().reset_index(name="RECENT_ENFORCEMENTS")
+    recent_counts = df_enf[df_enf[date_col] >= one_year_ago].groupby(group_col).size().reset_index(name="RECENT_ENFORCEMENTS")
     # Unresolved complaints
-    unresolved_counts = df_enf[df_enf["STATUS"] != "RESOLVED"].groupby("NAME OF COMPANY").size().reset_index(name="UNRESOLVED")
+    unresolved_counts = df_enf[df_enf[status_col].str.upper() != "RESOLVED"].groupby(group_col).size().reset_index(name="UNRESOLVED")
 
     # Merge all counts
     score_df = df_const.copy()
-    score_df = score_df.merge(total_counts, left_on="COMPANY", right_on="NAME OF COMPANY", how="left")
-    score_df = score_df.merge(recent_counts, on="COMPANY", how="left")
-    score_df = score_df.merge(unresolved_counts, on="COMPANY", how="left")
+    score_df = score_df.merge(total_counts, left_on="COMPANY", right_on=group_col, how="left")
+    score_df = score_df.merge(recent_counts, left_on="COMPANY", right_on=group_col, how="left")
+    score_df = score_df.merge(unresolved_counts, left_on="COMPANY", right_on=group_col, how="left")
     for col in ["TOTAL_ENFORCEMENTS", "RECENT_ENFORCEMENTS", "UNRESOLVED"]:
         if col not in score_df.columns:
             score_df[col] = 0
@@ -160,7 +192,8 @@ if df_const is not None and df_enf is not None:
         "TOTAL_ENFORCEMENTS", "RECENT_ENFORCEMENTS", "UNRESOLVED",
         "ENFORCEMENT_SCORE", "RANK"
     ]
-    output_df = score_df[show_cols].sort_values("RANK")
+    output_cols = [c for c in show_cols if c in score_df.columns]
+    output_df = score_df[output_cols].sort_values("RANK")
 
     st.subheader("Enforcement Index Results")
     st.dataframe(output_df, use_container_width=True)
